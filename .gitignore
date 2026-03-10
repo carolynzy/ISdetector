@@ -1,0 +1,34 @@
+# Python environment and cache
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+venv/
+.env
+*.egg-info/
+# Sequencing Data
+*.fastq
+*.fq
+*.fastq.gz
+*.fq.gz
+*.bam
+*.sam
+*.bai
+# Reference and Index Files
+*.fasta
+*.fa
+*.gb
+*.gbk
+*.bwt
+*.pac
+*.ann
+*.amb
+*.sa
+# Output and Logs
+output/
+*.log
+*.tsv
+*.csv
+# OS generated files
+.DS_Store
+Thumbs.db
