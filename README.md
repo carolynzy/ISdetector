@@ -43,3 +43,16 @@ isdetector \
     -o ./results \
     -t 16
 ```
+
+### 📊 Dataset
+The test data for this pipeline is archived on Zenodo:
+**DOI:** [https://doi.org/10.5281/zenodo.18996276](https://doi.org/10.5281/zenodo.18996276)
+
+It could also be downloaded by running: 
+```bash
+./download_data.sh
+```
+which will create a folder "data" and download the test data automatically.
+
+
+
