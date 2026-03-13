@@ -22,7 +22,7 @@ The following tools must be installed and available in your system's `PATH`:
 ## Installation
 1.  **Clone the repository:**
     ```bash
-    git clone [https://github.com/carolynzy/isdetector.git](https://github.com/carolynzy/isdetector.git)
+    git clone https://github.com/carolynzy/isdetector.git
     cd isdetector
     ```
 2.  **Install the package and dependencies globally:**
