@@ -92,7 +92,7 @@ Input Reads (Choose One Strategy):
 ```
 ## Outputs
 
-The pipeline generates a final results file (typically final_results.txt or .csv) with the following columns:
+The pipeline generates a final results file (typically SAMPLE_ISNAME_report.tsv) with the following columns:
 
 | Column |  Description |
 | :--- | :--- |
