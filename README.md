@@ -103,7 +103,7 @@ The pipeline generates a final results file (typically SAMPLE_ISNAME_report.tsv)
 | Gap| The distance between the paired peaks (represents deletion size if applicable).| 
 | IS_Length| The total length of the IS element detected.| 
 | Start/End_Clipped| The count of supporting soft-clipped reads at the start and end junctions.| 
-| Discordant_Count| Number of paired-end reads where mates map to different locations (supporting evidence).| 
+| Discordant_Count| Number of paired-end reads where mates unmapped (supporting evidence).| 
 | SV_Type| Description of associated structural variants (e.g., Deletion_150_300).| 
 
 If a GenBank file is provided for the reference genome, annotation of insertion sites and SVs will also be produced. The annotaion file contains the columns: 
