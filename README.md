@@ -7,7 +7,7 @@
 - [Workflow](#workflow)
 - [Dataset](#dataset)
 - [Arguments](#arguments)
-- [Output](#output)
+- [Outputs](#outputs)
 
 ## Prerequisites
 ### External Tools
@@ -47,6 +47,9 @@ isdetector \
 ```
 ## Workflow
 
+<p align="center">
+    <img src="flowchart_v2.png" alt="ISdetector Workflow" width="300">
+</p>
 
 ## Dataset 
 The test data for this pipeline is archived on Zenodo:
@@ -102,3 +105,32 @@ The pipeline generates a final results file (typically final_results.txt or .csv
 | Start/End_Clipped| The count of supporting soft-clipped reads at the start and end junctions.| 
 | Discordant_Count| Number of paired-end reads where mates map to different locations (supporting evidence).| 
 | SV_Type| Description of associated structural variants (e.g., Deletion_150_300).| 
+
+If a GenBank file is provided for the reference genome, annotation of insertion sites and SVs will also be produced. The annotaion file contains the columns: 
+
+|Column	|Description|
+|:---|:---|
+|Group_ID|	A unique identifier for a cluster of supporting reads. This allows you to trace multiple peaks or signals back to a single physical insertion event.|
+|Position|	The precise genomic coordinate (junction) where the insertion was detected. Usually represents the 5' or 3' end of the element.|
+|SV_Type	|The structural category of the event. Currently we only detecte deletions.|
+|Annotation_Type	|Describes the genomic region hit by the insertion (e.g., CDS (coding sequence), Intergenic, Promoter, or tRNA).|
+|Gene	|The name or locus tag of the gene directly affected by the insertion (e.g., infB, recA, or Locus_0012).|
+|Protein|	The name of the protein encoded by the affected gene. If the insertion is intergenic, this field may be empty or labeled as "N/A."|
+|Product	|The specific biological function of the protein (e.g., "DNA polymerase III subunit alpha"). This helps in assessing if the IS has disrupted a vital pathway.|
+
+If the --debug-fastq option is setup, a fastq file will be produced with the suffix `_extracted_combined.fq`.
+
+If the --debug-signal option is setup, a txt file containg insertion signals will be saved with the suffix `_ISNAME_signals.tsv`. The debug signal file contains columns: 
+
+|Column	|Description|
+|:---|:---|
+|Chromosome	|The genomic scaffold where the read was aligned.|
+|Cluster_id	|The ID of the peak/cluster this read belongs to. Useful for grouping signals that represent a single junction.|
+|Read_id	|The unique name of the FASTQ read. Use this to find the specific read in your original .bam or .fastq files.|
+|is_read1	|Boolean (True/False). Indicates if the signal came from the first or second read in a pair (R1 vs R2).|
+|Position	|The genomic coordinate where the "clip" starts. This marks the exact breakpoint on the host genome.|
+|IS_coordinate	|The position on the IS element that the clipped sequence matched. This helps determine if the insertion is full-length or truncated.|
+|Clipped_sequence	|The raw nucleotide sequence that did not match the host genome but did match the IS reference.|
+|IS_strand	|The strand of the IS element itself (+ or -) relative to its own reference sequence.|
+|Orientation	|The direction of the insertion relative to the host genome.|
+|Clip_side	|Indicates if the clip occurred on the Left (5') or Right (3') side of the read.|
