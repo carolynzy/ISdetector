@@ -18,4 +18,4 @@ ZERO_THRESH = 3
 
 # Stage 4: Detection
 PAIR_GAP = 20
-MAX_SV_SIZE = 300000
+MAX_SV_SIZE = 30000
