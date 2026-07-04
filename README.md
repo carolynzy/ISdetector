@@ -106,6 +106,8 @@ The pipeline generates a final results file (typically SAMPLE_ISNAME_report.tsv)
 | Discordant_Count| Number of paired-end reads where mates unmapped (supporting evidence).| 
 | SV_Type| Description of associated structural variants (e.g., Deletion_150_300).| 
 
+If the `Position` value ends with an asterisk (for example, `12345*`), that record represents a singular peak with no pairable counterpart. These calls are still reported, but the asterisk distinguishes them from fully paired insertion calls.
+
 If a GenBank file is provided for the reference genome, annotation of insertion sites and SVs will also be produced. The annotaion file contains the columns: 
 
 |Column	|Description|

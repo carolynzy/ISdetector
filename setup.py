@@ -5,9 +5,11 @@ Author: Yang Zhou
 Purpose: Installation configuration for the ISdetector package.
 """
 from setuptools import setup, find_packages
+from src import __version__
+
 setup(
     name="ISdetector",
-    version="1.0.0",
+    version=__version__,
     description="Detect Insertion Sequences (IS) and associated Structural Variations (SVs) using paired-end or single-end WGS data.",
     author="Yang Zhou",
     packages=find_packages(),  # Automatically finds the 'src' package

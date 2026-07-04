@@ -26,7 +26,7 @@ import pysam
 import pandas as pd
 from collections import defaultdict
 from Bio import SeqIO
-from src import utils, extract_fastq, cluster, detector, config
+from src import __version__, utils, extract_fastq, cluster, detector, config
 
 # Specific statistics tracking dictionary
 stats = {
@@ -38,7 +38,15 @@ def parse_args():
     """
     Parse command-line arguments.
     """
-    parser = argparse.ArgumentParser(description="ISdetector: Detect Insertion Sequences and SVs.")
+    parser = argparse.ArgumentParser(
+        description=f"ISdetector v{__version__}: Detect Insertion Sequences and SVs."
+    )
+    parser.add_argument(
+        "--version",
+        action="version",
+        version=f"%(prog)s {__version__}",
+        help="Show program version and exit.",
+    )
     # Input Files
     input_group = parser.add_argument_group('Input Reads (Choose One Strategy)')
     input_group.add_argument("-1", "--fastq1", help="Path to Raw Read 1 (FASTQ/GZ).")

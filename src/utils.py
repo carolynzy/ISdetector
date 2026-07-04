@@ -271,24 +271,30 @@ def bam_to_fastq(read):
 def write_insertion_report(results, output_path):
     """
     Write the final report of insertions sample_insertion_reports.tsv.
+
+    Singular peaks (those with no pairable counterpart) are included with an
+    asterisk appended to their Position value (e.g. "12345*") so they can be
+    distinguished from fully-paired insertion calls at a glance.
     """
     header = [
-        "Chromosome", "Position", "Gap", "Orientation", "IS_Length", "Category", 
+        "Chromosome", "Position", "Gap", "Orientation", "IS_Length", "Category",
         "Start_clipped", "End_clipped", "Discordant", "Proper", "SV"
     ]
     with open(output_path, 'w') as f:
         f.write("\t".join(header) + "\n")
         for res in results:
+            # Mark singular peaks with an asterisk on the position field.
+            pos_str = f"{res.position}*" if getattr(res, 'is_singular', False) else str(res.position)
             line = [
-                str(res.chromosome), 
-                str(res.position), 
-                str(res.gap), 
-                str(res.orientation), 
-                str(res.is_length), 
+                str(res.chromosome),
+                pos_str,
+                str(res.gap),
+                str(res.orientation),
+                str(res.is_length),
                 str(res.category),
-                str(res.start_clipped), 
-                str(res.end_clipped), 
-                str(res.discordant_count), 
+                str(res.start_clipped),
+                str(res.end_clipped),
+                str(res.discordant_count),
                 str(res.proper_count),
                 str(res.sv_type)
             ]
