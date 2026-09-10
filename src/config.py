@@ -1,6 +1,7 @@
 """
 Module: src/config.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
 Purpose: Store default values for parameters and flags used across pipeline stages.
 """

@@ -1,11 +1,12 @@
 """
 Module: src/detector.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
-Purpose: Stage 4 - Detect insertions by pairing peaks, identifying known sites, 
-         annotating features, and detecting complex SVs (e.g., deletions).
+Purpose: Stage 4 - Pair Stage 3 peaks, classify known and novel insertions,
+         group deletion events, and retain unpaired peaks for reporting.
+         GenBank annotation and report writing are handled by src.utils.
 """
-import pysam
 import logging
 from src import config
 from collections import defaultdict
@@ -20,7 +21,7 @@ class InsertionResult:
                  sv_type="None", group_id=None, peaks=None, is_singular=False):
         self.chromosome = chromosome
         self.position = position
-        self.gap = gap # Reference length (Known) or Peak Distance (Novel).
+        self.gap = gap  # Distance between paired peaks; "NA" for SV or singular calls.
         self.orientation = orientation
         self.category = category
         self.start_clipped = start_clipped
@@ -30,7 +31,7 @@ class InsertionResult:
         self.sv_type = sv_type # String describing associated SVs (e.g., "Deletion_100_200").
         self.is_length = is_length
         self.group_id = group_id
-        self.peaks = peaks if peaks else [] # Tuple (start_peak, end_peak) or single Peak
+        self.peaks = peaks if peaks else []  # Collection of member peaks, including singular calls.
         self.is_singular = is_singular  # True if this peak had no pairable counterpart
 
     def __repr__(self):
@@ -54,20 +55,26 @@ class PeakPair:
             
 def detect_insertions(cluster_dict, peak_list, is_len):
     """
-    Main entry point for Stage 5. 
-    Takes the raw outputs from Stage 4 (Cluster) and produces final InsertionResults.
+    Stage 4: turn Stage 3 clusters and peaks into insertion results.
+    First pair insertion peaks, then pair remaining deletion peaks, and finally
+    retain unassigned peaks as singular events.
     
     Args:
         cluster_dict: Dict {cluster_id: ClusterObj}
-        peak_list: List[Peak]
+        peak_list: List[Peak], sorted by chromosome and position. Positions must
+            already be lifted to original-reference coordinates. Peak group_id
+            attributes are assigned in place.
         is_len: Integer length of the IS element
         
     Returns:
-        List[InsertionResult]: The final, merged, sorted list of results.
+        tuple: (output_results, groups, group_cores), where output_results is
+            sorted by chromosome and position, groups maps event IDs to lists
+            of member peaks, and group_cores maps paired event IDs to PeakPair
+            objects. Singular events have no entry in group_cores.
     """
     
     groups = defaultdict(list)     # map: group_id -> list[Peak] including peaks related to deletions
-    group_cores = defaultdict(list)    # map: group_id -> PeakPair (The core insertion object)
+    group_cores = {}    # map: group_id -> PeakPair; singular events have no core pair
     
     assigned_peaks = set()
     
@@ -84,13 +91,16 @@ def detect_insertions(cluster_dict, peak_list, is_len):
         # Look ahead for a mate
         for j in range(i+1, len(peak_list)):
             p2 = peak_list[j]
+            # Peaks are sorted by chromosome and position; mates must share a chromosome.
+            if p2.chromosome != p1.chromosome:
+                break
             if p2 in assigned_peaks: continue
             
             # Dynamic Gap Threshold
             limit = config.PAIR_GAP
             
-            # If both are Reference/Restored from the SAME site (Lift-Over logic)
-            # The gap between peaks will be roughly the IS length.
+            # Matching nonempty reference labels permit a gap up to the IS length
+            # plus tolerance. The current restored label does not identify a unique site.
             if p1.known_ref and p2.known_ref and p1.known_ref == p2.known_ref:
                 limit = is_len + 50
                 
@@ -106,12 +116,12 @@ def detect_insertions(cluster_dict, peak_list, is_len):
                 p1, p2 = sorted([p1, p2], key=lambda x: x.position)
             else:
                 # Edge Case: Same Genomic Position
-                # Tie-breaker based on Viral Coordinate (is_coordinate)
+                # Tie-breaker based on the IS coordinate (is_coordinate).
                 if p1.orientation == "F":
-                    # Forward: Smaller viral coord is Start (5' end)
+                    # Forward: smaller IS coordinate is Start (5' end).
                     p1, p2 = sorted([p1, p2], key=lambda x: x.is_coordinate)
                 elif p1.orientation == "R":
-                    # Reverse: Larger viral coord is Start
+                    # Reverse: larger IS coordinate is Start.
                     p1, p2 = sorted([p1, p2], key=lambda x: x.is_coordinate, reverse=True)
             pair = PeakPair(p1, p2)
             # Constraints: Conflict reads
@@ -149,9 +159,8 @@ def detect_insertions(cluster_dict, peak_list, is_len):
     # =========================================================================
     # PASS 2: Aggregate Deletion Peaks (Physical Pairing)
     # =========================================================================
-    # Collect only unassigned peaks with Deletion status.
-    # Both peaks in a deletion pair must be unassigned — assigned_peaks is the
-    # single source of truth, consistent with Pass 1.
+    # Collect peaks with deletion status; the pairing loops skip assigned peaks.
+    # Both peaks in a deletion pair must be unassigned.
     deletion_peaks = [p for p in peak_list if "Deletion" in p.sv_status]
     deletion_peaks.sort(key=lambda x: (x.chromosome, x.position))
     group_svs = defaultdict(list)
@@ -193,7 +202,7 @@ def detect_insertions(cluster_dict, peak_list, is_len):
     # flagged with is_singular=True so the writer can mark its position with "*".
 
     pass3_start = len(groups)
-    for idx, p in enumerate(peak_list):
+    for p in peak_list:
         if p in assigned_peaks:
             continue
 
@@ -224,7 +233,7 @@ def detect_insertions(cluster_dict, peak_list, is_len):
         orient = pA.orientation
         final_gap = "NA"
         cat = "Novel"
-        is_len = "NA"
+        result_is_length = "NA"
         is_singular = False
 
         if core_pair:
@@ -243,7 +252,7 @@ def detect_insertions(cluster_dict, peak_list, is_len):
                     final_gap = 'NA'
                 else:
                     final_gap = core_pair.gap
-            is_len = core_pair.is_length
+            result_is_length = core_pair.is_length
 
         else:
             # --- Singular (unpaired) peak ---
@@ -267,7 +276,7 @@ def detect_insertions(cluster_dict, peak_list, is_len):
             end_clipped=sum(p.n_left_clips for p in members),
             discordant_count=cluster.discordant_count if cluster else 0,
             proper_count=cluster.proper_count if cluster else 0,
-            is_length=is_len,
+            is_length=result_is_length,
             sv_type=sv_string,
             group_id=gid,
             peaks=members,

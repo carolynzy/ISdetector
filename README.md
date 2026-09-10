@@ -10,30 +10,66 @@
 - [Outputs](#outputs)
 
 ## Prerequisites
+
+For the recommended installation, install **Conda or Mamba** and make it available in `PATH`. Run `install.sh` from Bash. The installer downloads Python and the tools below into a dedicated environment; you do not need to install them separately.
+
 ### External Tools
-The following tools must be installed and available in your system's `PATH`:
+
+The pipeline uses:
 * **BWA** (Burrows-Wheeler Aligner)
-* **Samtools**
+* **Samtools >=1.3** (ISdetector checks the version on startup)
 * **BLASTn** (NCBI BLAST+)
 ### Python Dependencies
-* Python 3.x
+
+ISdetector requires Python >=3.10. The installer provisions a compatible Python and installs these dependencies:
 * `pysam` (>=0.19.0)
 * `biopython` (>=1.80)
 * `pandas`
-* `numpy` (>=1.18.0)
+* `numpy`
 ## Installation
 1.  **Clone the repository:**
     ```bash
     git clone https://github.com/carolynzy/isdetector.git
     cd isdetector
     ```
-2.  **Install the package and dependencies globally:**
+2.  **Create a dedicated environment and install:**
     ```bash
-    pip install .
+    ./install.sh
     ```
-    *(Note: Using `pip install .` automatically installs the dependencies listed in `setup.py` and registers `isdetector` as a command-line tool.)*
+    Conda or Mamba must already be installed. The installer always creates a new environment containing Python, BWA, BLAST+, Samtools >=1.3, and ISdetector. Existing system tools and environments are preserved. It validates the environment's tools and stores their absolute paths privately in `<environment>/etc/isdetector/tools.json`, outside the repository. Runtime commands use these saved paths and report an error if a tool disappears or becomes incompatible.
+
+    Alternatively, for development, choose an editable installation instead of the command above so local Python source changes take effect on the next run:
+    ```bash
+    ./install.sh --editable
+    ```
+    Keep the repository at the same location for editable installations. Editable mode does not automatically download code updates or upgrade dependencies.
+    The default environment is `~/.local/share/isdetector/env`. Use `--prefix /path/to/new/environment` to choose another location. Existing locations are rejected. To reinstall, choose a new prefix; the existing managed launcher is updated only after successful installation. Environments and launchers must be outside this repository.
+
+    The launcher is installed at `~/.local/bin/isdetector` (customizable with `--launcher-dir`). With that directory first in `PATH`, simply run `isdetector` to show help, or `isdetector <arguments>` to analyze data. The launcher runs inside the dedicated environment automatically; manual `conda activate` is unnecessary. If needed, add `export PATH="$HOME/.local/bin:$PATH"` to your shell startup file. The launcher does not change the calling shell's active environment.
+
+    Direct `python -m pip install .` remains supported for users who manage dependencies themselves. Without a saved configuration, ISdetector searches `PATH` for compatible tools at startup. Direct pip installation does not create the environment or launcher.
+
+3.  **Make the launcher available and check installation:**
+
+    ```bash
+    export PATH="$HOME/.local/bin:$PATH"
+    isdetector
+    ```
+
+    Add the `export` line to your shell startup file (for example, `~/.bashrc`) to keep it for future terminals. Running the launcher without arguments displays help. You can also invoke it directly as `~/.local/bin/isdetector`.
+
+To reinstall into a new environment while preserving the old one:
+
+```bash
+./install.sh --prefix "$HOME/.local/share/isdetector/env-new"
+```
+
+After a successful installation, the managed launcher points to the new environment. The installer refuses to overwrite an unrelated command at the launcher location. Use `./install.sh --help` to see all options, including `--launcher-dir`.
+
 ## Usage
-Because the tool is installed via `setup.py`, you can run it directly using the `isdetector` command from anywhere.
+
+Run `isdetector` from any working directory once its launcher directory is in `PATH`. The launcher automatically runs the command in the dedicated environment, using the saved tool paths; no manual activation is needed.
+
 **For Paired-End Reads:**
 ```bash
 isdetector \
@@ -92,47 +128,51 @@ Input Reads (Choose One Strategy):
 ```
 ## Outputs
 
-The pipeline generates a final results file (typically SAMPLE_ISNAME_report.tsv) with the following columns:
+Each IS analysis writes `SAMPLE_ISNAME_report.tsv`. When no peaks are found, this file contains `No peaks detected.` instead of a table. Nonempty reports contain these columns, in order:
 
-| Column |  Description |
+| Column | Description |
 | :--- | :--- |
-|Chromosome|The genomic scaffold/chromosome where the event was detected.|
-| Position | The specific genomic coordinate of the insertion junction. | 
-| Category| Classification of the hit: Known, Known(SV), Novel, or Novel(SV).| 
-| Orientation| The direction of the IS element relative to the genome (+ or -).| 
-| Gap| The distance between the paired peaks (represents deletion size if applicable).| 
-| IS_Length| The total length of the IS element detected.| 
-| Start/End_Clipped| The count of supporting soft-clipped reads at the start and end junctions.| 
-| Discordant_Count| Number of paired-end reads where mates unmapped (supporting evidence).| 
-| SV_Type| Description of associated structural variants (e.g., Deletion_150_300).| 
+| Chromosome | Chromosome or contig in the original reference. |
+| Position | Representative junction coordinate on the original reference, using zero-based boundary coordinates. |
+| Gap | Absolute distance between paired peaks for non-SV calls; `NA` for SV or singular calls. |
+| Orientation | IS orientation relative to the reference: `F` (forward) or `R` (reverse). |
+| IS_Length | Absolute difference between the paired peaks' IS coordinates; `NA` for singular calls. |
+| Category | `Known`, `Known(SV)`, `Novel`, or `Novel(SV)`. |
+| Start_clipped | Number of right-clipped signals supporting the event. |
+| End_clipped | Number of left-clipped signals supporting the event. |
+| Discordant | Number of non-proper paired alignment records in the representative peak's cluster. Single-end records are also counted here. |
+| Proper | Number of proper-pair alignment records in the representative peak's cluster. |
+| SV | Deletion interval, such as `Deletion_150_300`, when a deletion pair is identified; otherwise `None`. |
 
-If the `Position` value ends with an asterisk (for example, `12345*`), that record represents a singular peak with no pairable counterpart. These calls are still reported, but the asterisk distinguishes them from fully paired insertion calls.
+A position ending in an asterisk (for example, `12345*`) represents a singular peak with no pairable counterpart. Support counts refer to alignment records or signals, not necessarily distinct read pairs. An `(SV)` category reflects a peak's depth-based status and can occur without an explicit deletion interval in `SV`.
 
-If a GenBank file is provided for the reference genome, annotation of insertion sites and SVs will also be produced. The annotaion file contains the columns: 
+When a GenBank reference is provided and annotations are generated, `SAMPLE_ISNAME_annotations.tsv` contains:
 
-|Column	|Description|
-|:---|:---|
-|Group_ID|	A unique identifier for a cluster of supporting reads. This allows you to trace multiple peaks or signals back to a single physical insertion event.|
-|Position|	The precise genomic coordinate (junction) where the insertion was detected. Usually represents the 5' or 3' end of the element.|
-|SV_Type	|The structural category of the event. Currently we only detecte deletions.|
-|Annotation_Type	|Describes the genomic region hit by the insertion (e.g., CDS (coding sequence), Intergenic, Promoter, or tRNA).|
-|Gene	|The name or locus tag of the gene directly affected by the insertion (e.g., infB, recA, or Locus_0012).|
-|Protein|	The name of the protein encoded by the affected gene. If the insertion is intergenic, this field may be empty or labeled as "N/A."|
-|Product	|The specific biological function of the protein (e.g., "DNA polymerase III subunit alpha"). This helps in assessing if the IS has disrupted a vital pathway.|
+| Column | Description |
+| :--- | :--- |
+| Group_ID | Identifier of the detected event grouping one or more peaks. |
+| Position | Representative event coordinate on the original reference. |
+| SV_Type | Deletion interval if available; otherwise `None`. |
+| Annotation_Type | `Intragenic`, `Intergenic`, `Exonic (Deletion)`, or `Intergenic (Deletion)`. Annotation examines CDS features. |
+| Gene | Gene name or locus tag for a CDS hit; affected genes for a deletion; or nearest upstream/downstream CDS labels and distances for an intergenic insertion. |
+| Protein | Duplicates the `Gene` field; it is not a separate protein-name annotation. |
+| Product | CDS product qualifier(s), or `NA` when unavailable. |
 
-If the --debug-fastq option is setup, a fastq file will be produced with the suffix `_extracted_combined.fq`.
+With `--debug-fastq`, the combined extracted reads are retained in `SAMPLE_extracted_combined.fq`, and an additional copy is written to `SAMPLE_debug_extracted.fq`. Paired-end output is interleaved; single-end output contains individual reads.
 
-If the --debug-signal option is setup, a txt file containg insertion signals will be saved with the suffix `_ISNAME_signals.tsv`. The debug signal file contains columns: 
+With `--debug-signal`, when peaks and signals are present, `SAMPLE_ISNAME_signals.tsv` contains:
 
-|Column	|Description|
-|:---|:---|
-|Chromosome	|The genomic scaffold where the read was aligned.|
-|Cluster_id	|The ID of the peak/cluster this read belongs to. Useful for grouping signals that represent a single junction.|
-|Read_id	|The unique name of the FASTQ read. Use this to find the specific read in your original .bam or .fastq files.|
-|is_read1	|Boolean (True/False). Indicates if the signal came from the first or second read in a pair (R1 vs R2).|
-|Position	|The genomic coordinate where the "clip" starts. This marks the exact breakpoint on the host genome.|
-|IS_coordinate	|The position on the IS element that the clipped sequence matched. This helps determine if the insertion is full-length or truncated.|
-|Clipped_sequence	|The raw nucleotide sequence that did not match the host genome but did match the IS reference.|
-|IS_strand	|The strand of the IS element itself (+ or -) relative to its own reference sequence.|
-|Orientation	|The direction of the insertion relative to the host genome.|
-|Clip_side	|Indicates if the clip occurred on the Left (5') or Right (3') side of the read.|
+| Column | Description |
+| :--- | :--- |
+| Chromosome | Contig name in the IS-clean reference, including its `_clean` suffix. |
+| Cluster_id | Cluster identifier in the form `{chromosome}_{start}_{end}`, using IS-clean reference coordinates. |
+| Read_id | Read name from the alignment. |
+| is_read1 | `True` for read 1, `False` for read 2; single-end reads are treated as read 1. |
+| Position | Zero-based junction boundary on the IS-clean reference. Debug signals are not lifted back to original-reference coordinates. |
+| IS_coordinate | Zero-based alignment boundary on the IS sequence. |
+| Clipped_sequence | Soft-clipped sequence that matched the IS. |
+| IS_strand | `1` for a forward match or `-1` for a reverse-complement match to the IS. |
+| Orientation | `F` (forward) or `R` (reverse). |
+| Clip_side | `LEFT` or `RIGHT`, identifying the soft-clipped end of the alignment. |
+
+Pipeline progress and errors are written to `SAMPLE.log` and the screen. Intermediate alignment BAM files are removed after successful per-IS processing.

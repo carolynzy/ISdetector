@@ -1,3 +1,4 @@
+tests/
 # Python environment and cache
 __pycache__/
 *.py[cod]

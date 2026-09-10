@@ -1,6 +1,7 @@
 """
 Module: src/utils.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
 Purpose: Helper functions for I/O, filtering, and data management.
          Includes handling of FASTA indexing, GenBank parsing, and Reporting.
@@ -15,6 +16,7 @@ from Bio.SeqRecord import SeqRecord
 from collections import defaultdict
 import pandas as pd
 from Bio import SeqFeature
+from src.processes import run_checked
 
 class Genebank:
     """
@@ -151,8 +153,7 @@ def generate_clean_reference(ref_fasta, is_seq, is_len, output_dir, identity_cut
         "-task", "blastn" 
     ]
         
-    process = subprocess.Popen(cmd, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
-    stdout, stderr = process.communicate()
+    stdout = run_checked(cmd)
         
     # 3. Parse BLAST results and Group by Contig ID
     # Structure: hits_by_contig = { "chrom1": [(start, end), ...], "chrom2": [...] }
@@ -258,7 +259,7 @@ def indexing(fasta):
     """
     if not os.path.exists(f"{fasta}.bwt"):
         logging.info(f"Indexing {fasta}...")
-        subprocess.check_call(["bwa", "index", fasta])
+        run_checked(["bwa", "index", fasta])
 
 def bam_to_fastq(read):
     """

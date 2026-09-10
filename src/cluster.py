@@ -1,6 +1,7 @@
 """
 Module: src/cluster.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
 Purpose: Stage 3 - Group reads into clusters, identify insertion signals, 
          determine orientation, detect peaks, and map coordinates back 
@@ -79,7 +80,7 @@ class Peak:
 def filter_read(read):
     """
     Filter reads for peak detection
-    Exclude MQ=0 and Secondary/Supplementary alignments.
+    Exclude Secondary/Supplementary alignments.
     """
     if read.is_secondary or read.is_supplementary or read.is_unmapped:
         return False
@@ -405,7 +406,7 @@ def finalize_cluster(reads, current_chrom):
     
     start_position = min(ref_starts)
     end_position = max(ref_ends) if ref_ends else max(ref_starts)
-    cluster_id = f"{start_position}_{end_position}"
+    cluster_id = f"{current_chrom}_{start_position}_{end_position}"
 
     discordant_count = 0
     proper_count = 0

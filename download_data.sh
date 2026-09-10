@@ -1,4 +1,9 @@
 #!/bin/bash
+set -Eeuo pipefail
+
+# Keep download diagnostics on screen and in a persistent log.
+exec > >(tee -a download_data.log) 2>&1
+trap 'status=$?; echo "ERROR: command failed (exit $status), line $LINENO: $BASH_COMMAND"; exit "$status"' ERR
 
 # --- Configuration ---
 DATA_DIR="data"
@@ -28,7 +33,8 @@ download_file() {
         echo "✅ $FILENAME already exists, skipping."
     else
         echo "📥 Downloading $FILENAME..."
-        curl -L $URL -o "$DATA_DIR/$FILENAME"
+        curl --fail --show-error --location "$URL" -o "$DATA_DIR/$FILENAME.part"
+        mv "$DATA_DIR/$FILENAME.part" "$DATA_DIR/$FILENAME"
     fi
 }
 

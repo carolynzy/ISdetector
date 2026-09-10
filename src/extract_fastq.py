@@ -1,41 +1,17 @@
 """
 Module: src/extract_fastq.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
 Purpose: Stage 1 - Map raw reads to the IS database and extract qualified pairs 
          (soft-clipped or unmapped-mate-mapped) for further analysis.
 """
 import sys
-import os
-import subprocess
 import logging
-import threading
 import pysam
 from Bio.Seq import Seq
 from src import config
-
-def log_stderr(process):
-    """
-    Dedicated thread to read stderr from the BWA process to catch errors immediately.
-    """
-    suppress_keywords = [
-        "[M::mem_pestat]", 
-        "[M::process]", 
-        "[M::mem_process_seqs]", 
-        "[M::mem_sort_dedup_and_mate]", 
-        "[M::worker]",
-        "[M::main_mem]"
-    ]
-    
-    for line in process.stderr:
-        line_str = line.decode()
-        
-        # If the line contains any of the suppression keywords, skip it
-        if any(keyword in line_str for keyword in suppress_keywords):
-            continue
-            
-        # Otherwise, write it to stderr (keeps errors visible)
-        sys.stderr.write(f"[BWA] {line_str}")
+from src.processes import streaming_process
 
 def get_original_sequence(read):
     """
@@ -66,7 +42,8 @@ def is_high_n_content(sequence):
 
 def check_soft_clip(read):
     """
-    Check if read is soft-clipped with length between MIN_CLIP and MAX_CLIP.
+    Check for a soft clip strictly between MIN_ANCHOR_LEN and
+    the read length minus MIN_ANCHOR_LEN.
     Checks both left (cigartuples[0]) and right (cigartuples[-1]) clips.
     """
     if not read.cigartuples:
@@ -96,13 +73,10 @@ def check_soft_clip(read):
 
 def align_to_is_db(is_fasta, read_files, threads=16, mode='paired'):
     """
-    Execute bwa mem to map reads to IS database.
-    Stream processing: Do not write intermediate BAM to disk.
-    read_files: List containing either [interleaved_path] or [r1_path, r2_path].
+    Return a managed BWA process that streams SAM alignments to the IS database.
+    read_files contains one single-end/interleaved file or two paired-end files.
     """
-    # Command constructs: bwa mem -t {threads} {is_fasta} {fastq1} {fastq2}
-    # Note: Although spec mentions -p, that is for interleaved. 
-    # Since we have separate R1/R2, we pass both to standard bwa mem.
+    # BWA uses -p for interleaved input; separate paired files are positional inputs.
     cmd = ["bwa", "mem", "-v", "1", "-t", str(threads), is_fasta] + read_files
     
     if mode == 'interleaved':
@@ -114,25 +88,12 @@ def align_to_is_db(is_fasta, read_files, threads=16, mode='paired'):
     else:
         logging.info(f"Starting BWA alignment (Paired): {' '.join(cmd)}")
         
-    # Use subprocess.Popen with bufsize management to stream out BWA
-    process = subprocess.Popen(
-        cmd,
-        stdout=subprocess.PIPE,
-        stderr=subprocess.PIPE,
-        bufsize=10**6
-    )
-    
-    # Ensure a dedicated thread reads stderr
-    thread = threading.Thread(target=log_stderr, args=(process,))
-    thread.daemon = True
-    thread.start()
-    
-    return process
+    return streaming_process(cmd)
 
 def format_fastq(name, seq, qual, suffix):
     """
     Format entry as standard 4-line FASTQ.
-    Suffix (e.g., '/1' or '/2') is appended to the name for clarity in interleaved output.
+    Suffix (e.g., '1' or '2') is appended after '/'  to the name for clarity in interleaved output.
     """
     return f"@{name}/{suffix}\n{seq}\n+\n{qual}\n"
 
@@ -219,16 +180,20 @@ def run_extraction(is_db, read_files, out_handle, threads=16, debug_path=None, m
     """
     Main Module Function:
     1. Runs BWA MEM via subprocess.
-    2. Streams BAM output.
+    2. Streams SAM output.
     3. Filters reads and writes them to 'out_handle'.
     """
        
     # Setup logging
     logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
     # Start BWA stream
-    bwa_process = align_to_is_db(is_fasta=is_db, read_files=read_files, threads=threads, mode=mode)
+    with align_to_is_db(is_fasta=is_db, read_files=read_files, threads=threads, mode=mode) as bwa_process:
+        _extract_stream(bwa_process, out_handle, debug_path, mode)
+
+
+def _extract_stream(bwa_process, out_handle, debug_path, mode):
     
-    # Open pysam AlignmentFile on stdin
+    # Read SAM output from the managed BWA process.
     try:
         # "r" mode reads SAM/BAM. Since BWA outputs SAM by default to stdout, this works.
         bam_stream = pysam.AlignmentFile(bwa_process.stdout, "r")
@@ -254,9 +219,8 @@ def run_extraction(is_db, read_files, out_handle, threads=16, debug_path=None, m
     for read in bam_stream:
         processed_count += 1
         
-        # Update screen every 100,000 reads
+        # Update the screen every 1,000,000 alignment records.
         if processed_count % 1000000 == 0:
-        # The newline \n is critical so log_stream can read it as a complete line
             sys.stderr.write(f"PROGRESS: Processed {processed_count:,} reads...\n")
             sys.stderr.flush()	
         
@@ -279,17 +243,11 @@ def run_extraction(is_db, read_files, out_handle, threads=16, debug_path=None, m
             extracted_count += 1
     
     # Log the summary
-    logging.info(f"Stage 1 Complete: Processed {processed_count} reads.Extracted {extracted_count} candidate read pairs. ")    
+    unit = "reads" if mode == "single" else "read pairs"
+    logging.info(f"Stage 1 Complete: Processed {processed_count} alignment records. Extracted {extracted_count} candidate {unit}.")
 
     # Cleanup
     bam_stream.close()
     if debug_fh:
         debug_fh.close()
     
-    # Check BWA return code
-    bwa_process.stdout.close()
-    return_code = bwa_process.wait()
-    if return_code != 0:
-        logging.error(f"Align to ISs failed with return code {return_code}")
-        sys.exit(return_code)
-

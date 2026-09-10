@@ -1,17 +1,12 @@
 """
 Module: src/main.py
-Project: ISdetector v1.0
+Project: ISdetector
+Version: 1.1.0
 Author: Yang Zhou
-Purpose: Main entry point and pipeline controller.
-         1. Parses command-line arguments.
-         2. Pre-processes reference files (GenBank to FASTA, Clean Reference, Indexing).
-         3. Loop per IS:
-            a. Checks if output exists (skips if yes).
-            b. Creates specific IS-clean reference.
-            c. Aligns "Bait" reads to specific reference.
-            d. Detects, Annotates, Reports.
-            e. Catches errors and proceeds to next IS.
-            f. Generates final insertion and signal reports.
+Purpose: Parse arguments and validate external tools, extract candidate reads once,
+         then prepare a clean reference, align, detect, annotate, and report per IS.
+         Skip existing reports and continue after individual IS failures; return a
+         nonzero exit status if any IS analysis fails.
 Usage:
     isdetector -1 R1.fq -2 R2.fq -i is.fa -r ref.gb -s sample_id -o ./output
 """	
@@ -20,19 +15,12 @@ import sys
 import argparse
 import subprocess
 import logging
-import gzip
-import threading
+from src.dependencies import check_samtools_version, configured_executable
+from src.processes import run_checked, streaming_process
 import pysam
 import pandas as pd
-from collections import defaultdict
 from Bio import SeqIO
-from src import __version__, utils, extract_fastq, cluster, detector, config
-
-# Specific statistics tracking dictionary
-stats = {
-    "processed_reads": 0,
-    "extracted_pairs": 0
-}
+from src import __version__, utils, extract_fastq, cluster, detector
 
 def parse_args():
     """
@@ -98,58 +86,16 @@ def setup_logging(outdir, sample):
     logging.info(f"Logging initialized. Output directory: {outdir}")
 
 def check_dependencies():
-    dependencies = ["bwa", "samtools", "blastn"]
-    for dep in dependencies:
-        if subprocess.call(f"which {dep}", shell=True, stdout=subprocess.DEVNULL) != 0:
-            logging.error(f"{dep} not found in PATH.")
-            sys.exit(1)
-
-def log_stream(stream, log_level, parse_extraction_count=False):
-    """
-    Reads from a stream line by line and logs it.
-    """
-    # Define messages to suppress
-    suppress_keywords = ["[M::mem_pestat]", "[M::process]", "[M::mem_process_seqs]"]
-    
-    for line in stream:
-        try:
-            line_str = line.decode().strip()
-                
-            if not line_str:
-                continue
-            
-            # --- Feature: BWA Suppression ---
-            if any(keyword in line_str for keyword in suppress_keywords):
-                continue  # Skip this line
-            
-            # --- Feature: Real-time Progress Display ---
-            # If the subprocess sends a progress update, print it with \r to overwrite 
-            # the current line on the console. Do NOT send to log_level (file).
-            if line_str.startswith("PROGRESS:"):
-                sys.stderr.write(f"\r{line_str}")
-                sys.stderr.flush()
-                continue
-            
-            # --- Standard Logging ---
-            # If we were printing progress bars, clear the line first to prevent ghost text
-            if "\r" in sys.stderr.getvalue() if hasattr(sys.stderr, 'getvalue') else True:
-                 sys.stderr.write("\r" + " " * 80 + "\r") # Clear line
-                         
-            log_level(line_str)
-                
-            if parse_extraction_count and ("Extracted" in line_str or "Processed" in line_str) and ("read pairs" in line_str or "reads" in line_str):
-                try:
-                    parts = line_str.split()
-                    if "Extracted" in parts:
-                        idx = parts.index("Extracted")
-                        stats["extracted_pairs"] = int(parts[idx + 1])
-                    if "Processed" in parts:
-                        idx = parts.index("Processed")
-                        stats["processed_reads"] = int(parts[idx + 1])
-                except Exception: 
-                    pass
-        except Exception: 
-            pass
+    try:
+        for dep in ("bwa", "blastn"):
+            logging.info("Using %s at %s", dep, configured_executable(dep))
+        samtools_path = configured_executable("samtools")
+        version = check_samtools_version(samtools_path)
+    except RuntimeError as exc:
+        logging.error("%s", exc)
+        sys.exit(1)
+    logging.info("Using %s at %s", version, samtools_path)
+    return samtools_path
 
 def stream_and_save(input_bam, output_bam_handle):
     """Yields reads from stream and saves to disk simultaneously."""
@@ -164,7 +110,7 @@ def main():
         os.makedirs(args.outdir)
         
     setup_logging(args.outdir, args.sample)
-    check_dependencies()
+    samtools_path = check_dependencies()
     
     # -------------------------------------------------------------------------
     # 0. Load Data & Prepare Global Reference
@@ -214,10 +160,8 @@ def main():
     if not os.path.exists(global_is_path + ".bwt"):
         logging.info(f"Indexing IS Database: {global_is_path}")
         try:
-            subprocess.check_call(["bwa", "index", global_is_path], 
-                                  stdout=subprocess.DEVNULL, 
-                                  stderr=subprocess.DEVNULL)
-        except subprocess.CalledProcessError:
+            run_checked(["bwa", "index", global_is_path])
+        except (subprocess.CalledProcessError, OSError):
             logging.error("Failed to index IS Database. Check 'bwa' installation.")
             sys.exit(1)
     
@@ -278,6 +222,7 @@ def main():
     # -------------------------------------------------------------------------
     # Loop: Process Each IS Individually
     # -------------------------------------------------------------------------    
+    failed_is = []
     for record in is_records_toprocess:
         is_name = record.id
         is_seq = str(record.seq)
@@ -293,7 +238,7 @@ def main():
         
         try:
             # 2. Generate IS-Specific Clean Reference
-            # We pass the specific IS seq to mask it in the reference
+            # Remove matches to this IS from the reference and retain coordinate mapping.
             ref_clean_path, crossmap = utils.generate_clean_reference(
                 ref_fasta_original, is_seq, is_len, args.outdir, suffix=f"_{safe_is_name}"
             )
@@ -308,39 +253,19 @@ def main():
             if args.mode != "single":
                 cmd_bwa.append("-p") # Interleaved input flag for BWA (Extracted reads are interleaved if paired)
             cmd_bwa.extend([ref_clean_path, extracted_fq_path])
-            cmd_sort = ["samtools", "sort", "-@", str(args.threads), "-"]
+            cmd_sort = [samtools_path, "sort", "-@", str(args.threads), "-"]
             
             logging.info(f"Stage 2: Aligning to {os.path.basename(ref_clean_path)}...")
             
-            with open(os.devnull, "w") as devnull:
-                p2_bwa = subprocess.Popen(cmd_bwa, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                p2_sort = subprocess.Popen(cmd_sort, stdin=p2_bwa.stdout, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-                
-                # Start logging threads
-                t_bwa = threading.Thread(target=log_stream, args=(p2_bwa.stderr, logging.debug)) # Debug level to reduce noise
-                t_sort = threading.Thread(target=log_stream, args=(p2_sort.stderr, logging.debug))
-                t_bwa.start(); t_sort.start()
-                
-                p2_bwa.stdout.close() # Allow p2_bwa to receive SIGPIPE if sort closes
-                
-                # 4. Stage 3: Clustering
-                # Read from Sort stream, write to disk BAM
-                bam_stream = pysam.AlignmentFile(p2_sort.stdout, "rb")
-                outfile_bam = pysam.AlignmentFile(bam_path, "wb", template=bam_stream)
-                
-                cluster_dict = cluster.create_microclusters(
-                    stream_and_save(bam_stream, outfile_bam)
-                )
-                
-                outfile_bam.close()
-                bam_stream.close()
-                p2_sort.wait()
-                p2_bwa.wait()
-                t_bwa.join(); t_sort.join()
+            with streaming_process(cmd_bwa) as p2_bwa:
+                with streaming_process(cmd_sort, stdin=p2_bwa.stdout) as p2_sort:
+                    p2_bwa.stdout.close()
+                    with pysam.AlignmentFile(p2_sort.stdout, "rb") as bam_stream:
+                        with pysam.AlignmentFile(bam_path, "wb", template=bam_stream) as outfile_bam:
+                            cluster_dict = cluster.create_microclusters(
+                                stream_and_save(bam_stream, outfile_bam)
+                            )
 
-            if p2_sort.returncode != 0:
-                raise Exception("Alignment/Sorting failed.")
-                
             # Index the specific BAM
             pysam.index(bam_path)
             
@@ -401,6 +326,7 @@ def main():
                     os.remove(global_is_path + ext)
 
         except Exception as e:
+            failed_is.append(is_name)
             logging.error(f"Pipeline failed for IS {is_name}: {e}")
             logging.error("Proceeding to next IS...")
             continue
@@ -410,6 +336,10 @@ def main():
         os.remove(extracted_fq_path)
     if args.reference.endswith(('.gb', '.gbk')) and os.path.exists(ref_fasta_original):
         os.remove(ref_fasta_original)
+
+    if failed_is:
+        logging.error("Analysis failed for %d IS sequences: %s", len(failed_is), ", ".join(failed_is))
+        sys.exit(1)
 
     logging.info(f"All IS sequences processed.\n{'='*60}\n{'='*60}")
 
