@@ -8,6 +8,8 @@ venv/
 .env
 *.egg-info/
 build/
+scripts/profile_pipeline.py
+scripts/profile_stage3.py
 # Sequencing Data
 *.fastq
 *.fq
@@ -34,3 +36,6 @@ output/
 # OS generated files
 .DS_Store
 Thumbs.db
+
+# Local to-do list
+/TO-DO.txt

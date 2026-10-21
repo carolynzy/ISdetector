@@ -4,7 +4,7 @@ Project: ISdetector
 Version: 1.1.0
 Author: Yang Zhou
 Purpose: Parse arguments and validate external tools, extract candidate reads once,
-         then prepare a clean reference, align, detect, annotate, and report per IS.
+         into per-IS FASTQs, then prepare a clean reference, align, detect, annotate, and report per IS.
          Skip existing reports and continue after individual IS failures; return a
          nonzero exit status if any IS analysis fails.
 Usage:
@@ -50,13 +50,16 @@ def parse_args():
     parser.add_argument("-o", "--outdir", required=True, help="Directory for all outputs.")
     
     # Optional / Config
-    parser.add_argument("-t", "--threads", type=int, default=16, help="CPU threads (default: 16).")
+    parser.add_argument("-t", "--threads", type=int, default=16,
+                        help="BWA/Samtools threads and Stage 3 worker processes (default: 16).")
     
     # Debug flags
     parser.add_argument("--debug-fastq", action="store_true", help="Save Stage 1 extracted reads to file.")
     parser.add_argument("--debug-signal", action="store_true", help="Save Stage 3 insertion signals to file.")
 
     args = parser.parse_args()
+    if args.threads < 1:
+        parser.error('--threads must be at least 1')
 
     modes = []
     if args.fastq1 and args.fastq2: modes.append("paired")
@@ -187,9 +190,15 @@ def main():
     # -------------------------------------------------------------------------
     # Stage 1: Global Extraction (Run ONCE for ALL IS)
     # -------------------------------------------------------------------------
-    # We extract reads that match ANY sequence in the IS database.
-    # We MUST save these to a file to reuse them for each IS loop.
-    extracted_fq_path = os.path.join(args.outdir, f"{args.sample}_extracted_combined.fq")
+    # Extract qualifying reads separately for every matching IS sequence.
+    extracted_paths = {}
+    for record in is_records_toprocess:
+        safe_is_name = record.id.replace("|", "_").replace("/", "_")
+        extracted_paths[record.id] = os.path.join(
+            args.outdir, f"{args.sample}_{safe_is_name}_extracted.fq")
+    if len(set(extracted_paths.values())) != len(extracted_paths) or len(extracted_paths) != len(is_records_toprocess):
+        logging.error("IS IDs must be unique and produce distinct sanitized filenames.")
+        sys.exit(1)
 
     logging.info("Stage 1: Global Extraction (Aligning to all IS sequences)...")
     
@@ -204,25 +213,24 @@ def main():
     # Stage 1: Extraction
     # Run Extraction Module directly
     try:
-        with open(extracted_fq_path, "w") as f_out:
-            extract_fastq.run_extraction(
-                is_db=global_is_path,     # Use filtered DB
-                read_files=input_reads,    # Pass list of files
-                out_handle=f_out,          # Pass file handle
-                threads=args.threads,
-                debug_path=os.path.join(args.outdir, f"{args.sample}_debug_extracted.fq") if args.debug_fastq else None,
-                mode=args.mode
-            )
+        extracted_counts = extract_fastq.run_extraction(
+            is_db=global_is_path,
+            read_files=input_reads,
+            output_paths=extracted_paths,
+            threads=args.threads,
+            mode=args.mode
+        )
     except Exception as e:
         logging.error(f"Stage 1 Extraction failed: {e}")
         sys.exit(1)
         
-    logging.info(f"Stage 1 Complete. Extracted reads saved to: {extracted_fq_path}")
+    logging.info("Stage 1 complete. Extracted reads saved to per-IS FASTQs.")
         
     # -------------------------------------------------------------------------
     # Loop: Process Each IS Individually
     # -------------------------------------------------------------------------    
     failed_is = []
+    clean_reference_paths = set()
     for record in is_records_toprocess:
         is_name = record.id
         is_seq = str(record.seq)
@@ -237,16 +245,23 @@ def main():
         logging.info(f"{'=' * 60}")
         
         try:
+            extracted_fq_path = extracted_paths[is_name]
+            if extracted_counts[is_name] == 0:
+                logging.info("No candidate reads for %s; skipping alignment.", is_name)
+                with open(report_path, "w") as stream:
+                    stream.write("No peaks detected.\n")
+                continue
             # 2. Generate IS-Specific Clean Reference
             # Remove matches to this IS from the reference and retain coordinate mapping.
             ref_clean_path, crossmap = utils.generate_clean_reference(
                 ref_fasta_original, is_seq, is_len, args.outdir, suffix=f"_{safe_is_name}"
             )
+            clean_reference_paths.add(ref_clean_path)
             
             # Index the specific reference
             utils.indexing(ref_clean_path) 
             
-            # 3. Stage 2: Specific Alignment (Combined Reads -> Specific Clean Ref)
+            # 3. Stage 2: Specific Alignment (IS-Specific Reads -> Specific Clean Ref)
             bam_path = os.path.join(args.outdir, f"{args.sample}_{safe_is_name}.bam")
             
             cmd_bwa = ["bwa", "mem", "-t", str(args.threads), "-v", "1"]
@@ -272,7 +287,7 @@ def main():
             # 5. Peak Detection
             logging.info(f"Stage 3: Detecting peaks for {is_name}...")
             signal_list, peak_list = cluster.scan_clusters_for_peaks(
-                cluster_dict, is_seq, bam_path, crossmap
+                cluster_dict, is_seq, bam_path, crossmap, threads=args.threads
             )
 
             logging.info(f"Stage 3: Detected {len(peak_list)} peaks for {is_name}.")
@@ -332,8 +347,17 @@ def main():
             continue
 
     # Final Cleanup
-    if os.path.exists(extracted_fq_path) and not args.debug_fastq:
-        os.remove(extracted_fq_path)
+    for ext in ["", ".bwt", ".pac", ".ann", ".amb", ".sa"]:
+        if os.path.exists(global_is_path + ext):
+            os.remove(global_is_path + ext)
+    for ref_clean_path in clean_reference_paths:
+        for ext in ["", ".bwt", ".pac", ".ann", ".amb", ".sa", ".bai", ".fai"]:
+            if os.path.exists(ref_clean_path + ext):
+                os.remove(ref_clean_path + ext)
+    if not args.debug_fastq:
+        for extracted_fq_path in extracted_paths.values():
+            if os.path.exists(extracted_fq_path):
+                os.remove(extracted_fq_path)
     if args.reference.endswith(('.gb', '.gbk')) and os.path.exists(ref_fasta_original):
         os.remove(ref_fasta_original)
 

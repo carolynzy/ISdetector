@@ -110,7 +110,7 @@ which will create a folder "data" and download the test data automatically.
   -o OUTDIR, --outdir OUTDIR
                         Directory for all outputs.
   -t THREADS, --threads THREADS
-                        CPU threads (default: 16).
+                        BWA/Samtools threads and Stage 3 worker processes (default: 16).
   --debug-fastq         Save Stage 1 extracted reads to file.
   --debug-signal        Save Stage 3 insertion signals to file.
 ```
@@ -126,6 +126,22 @@ Input Reads (Choose One Strategy):
   -u UNPAIRED, --unpaired UNPAIRED
                         Path to Single-End FASTQ/GZ.
 ```
+
+Stage 3 uses up to `--threads` worker processes, limited by the number of clusters.
+Each cluster is transferred as SAM strings; workers reconstruct reads and open
+their own BAM handles for coverage queries. New clusters are submitted whenever
+any task completes, so a slow earlier cluster does not prevent further submissions.
+At most twice the worker count of tasks are in flight; completed results are
+buffered as needed to retain the serial ordering
+and detection rules. Use `--threads 1` for serial execution. More workers increase
+memory use, and small workloads may be faster serially because worker startup and
+read transfer add overhead. The pipeline profiler measures parallel Stage 3 wall
+time and saves separate profiles inside workers. `worker_breakdown.csv` reports
+alignment, sorting, median, coverage, and SAM reconstruction times accumulated
+across workers; these overlapping worker seconds must not be added to elapsed
+wall time. `worker_totals.csv` and `worker_clusters.csv` show workload distribution
+and task wall/CPU times. Normal runs do not enable worker profiling.
+
 ## Outputs
 
 Each IS analysis writes `SAMPLE_ISNAME_report.tsv`. When no peaks are found, this file contains `No peaks detected.` instead of a table. Nonempty reports contain these columns, in order:
@@ -158,7 +174,7 @@ When a GenBank reference is provided and annotations are generated, `SAMPLE_ISNA
 | Protein | Duplicates the `Gene` field; it is not a separate protein-name annotation. |
 | Product | CDS product qualifier(s), or `NA` when unavailable. |
 
-With `--debug-fastq`, the combined extracted reads are retained in `SAMPLE_extracted_combined.fq`, and an additional copy is written to `SAMPLE_debug_extracted.fq`. Paired-end output is interleaved; single-end output contains individual reads.
+Stage 1 writes `SAMPLE_IS_extracted.fq` for each IS, assigning reads nonexclusively using BWA primary and alternative alignments (`-a -Y`). The existing clipping and mapped/unmapped-mate criteria are evaluated per IS; paired reads are kept together and written once per qualifying IS. Stage 2 uses only that IS’s FASTQ. IS sequences with no candidates receive a no-peaks report without alignment. With `--debug-fastq`, these FASTQs are retained; otherwise they are removed after processing. Paired-end output is interleaved; single-end output contains individual reads. Assignment is limited to alignments reported by BWA.
 
 With `--debug-signal`, when peaks and signals are present, `SAMPLE_ISNAME_signals.tsv` contains:
 

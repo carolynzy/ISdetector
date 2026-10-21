@@ -8,6 +8,10 @@ Purpose: Stage 3 - Group reads into clusters, identify insertion signals,
          to the original reference genome.
 """
 import statistics
+import logging
+import multiprocessing
+from multiprocessing.util import Finalize
+from concurrent.futures import ProcessPoolExecutor, wait, FIRST_COMPLETED
 import pysam
 from Bio import Align
 from Bio.Seq import Seq
@@ -16,6 +20,162 @@ from src import config
 import numpy as np
 from collections import Counter
 from collections import defaultdict
+from collections import deque
+
+
+READ_CHUNK_SIZE = 5000
+MIN_CHUNKED_READS = 10000
+
+
+def _read_chunk_ranges(read_count):
+    """Split off 5,000-read tasks until fewer than 10,000 reads remain."""
+    ranges = []
+    start = 0
+    while read_count - start >= MIN_CHUNKED_READS:
+        ranges.append((start, start + READ_CHUNK_SIZE))
+        start += READ_CHUNK_SIZE
+    ranges.append((start, read_count))
+    return ranges
+
+
+def _serialized_cluster_tasks(cluster_dict):
+    for index, (cluster_id, obj) in enumerate(cluster_dict.items()):
+        ranges = _read_chunk_ranges(len(obj.reads))
+        kind = 'extract' if len(ranges) > 1 else 'full'
+        for chunk_index, (start, end) in enumerate(ranges):
+            records = [read.to_string() for read in obj.reads[start:end]]
+            yield index, len(ranges), (cluster_id, obj.chromosome, records, kind, chunk_index)
+
+
+_worker_bam = None
+_worker_is_seq = None
+_worker_profiler = None
+_worker_timing_stream = None
+
+
+def _initialize_peak_worker(bam_path, is_seq, config_values, worker_profile_dir=None):
+    """Open a private BAM and reproduce the parent's configuration under spawn."""
+    global _worker_bam, _worker_is_seq, _worker_profiler, _worker_timing_stream
+    for name, value in config_values.items():
+        setattr(config, name, value)
+    _worker_is_seq = is_seq
+    _worker_bam = pysam.AlignmentFile(bam_path, 'rb')
+    Finalize(None, _worker_bam.close, exitpriority=10)
+    if worker_profile_dir is not None:
+        import cProfile
+        import csv
+        import os
+        from pathlib import Path
+        base = Path(worker_profile_dir) / f'worker_{os.getpid()}'
+        _worker_profiler = cProfile.Profile()
+        _worker_timing_stream = base.with_suffix('.csv').open('w', newline='')
+        csv.writer(_worker_timing_stream).writerow(
+            ['cluster_id', 'reads', 'wall_seconds', 'cpu_seconds', 'status',
+             'task_kind', 'chunk_index'])
+        _worker_timing_stream.flush()
+        Finalize(None, _save_worker_profile, args=(str(base.with_suffix('.prof')),),
+                 exitpriority=20)
+
+
+def _save_worker_profile(path):
+    try:
+        if _worker_profiler.getstats():
+            _worker_profiler.dump_stats(path)
+    finally:
+        _worker_timing_stream.close()
+
+
+def _detect_serialized_cluster(task):
+    if _worker_profiler is None:
+        return _reconstruct_and_detect(task)
+    import csv
+    import time
+    start = time.perf_counter()
+    cpu_start = time.process_time()
+    status = 'completed'
+    try:
+        return _worker_profiler.runcall(_reconstruct_and_detect, task)
+    except BaseException:
+        status = 'failed'
+        raise
+    finally:
+        csv.writer(_worker_timing_stream).writerow(
+            [task[0], 0 if task[3] == 'merge' else len(task[2]), time.perf_counter() - start,
+             time.process_time() - cpu_start, status, task[3], task[4]])
+        _worker_timing_stream.flush()
+
+
+def _reconstruct_and_detect(task):
+    cluster_id, chromosome, sam_records, kind, chunk_index = task
+    if kind == 'merge':
+        return _group_signals_into_peaks(sam_records, _worker_bam)
+    reads = [pysam.AlignedSegment.fromstring(record, _worker_bam.header)
+             for record in sam_records]
+    if kind == 'extract':
+        return extract_signals_from_cluster(reads, cluster_id, chromosome, _worker_is_seq)
+    return detect_all_peaks(reads, cluster_id, chromosome, _worker_is_seq, _worker_bam)
+
+
+def _parallel_cluster_results(cluster_dict, is_seq, bam_path, workers, worker_profile_dir=None):
+    """Refill on any completion, then emit buffered results in cluster order.
+
+    Limit in-flight SAM tasks to twice the worker count. Completed results may
+    accumulate while an earlier cluster runs; they do not block new submissions.
+    """
+    config_values = {name: value for name, value in vars(config).items() if name.isupper()}
+    tasks = iter(_serialized_cluster_tasks(cluster_dict))
+    pending = {}
+    completed = {}
+    partial_signals = {}
+    merge_tasks = deque()
+    next_result = 0
+    with ProcessPoolExecutor(max_workers=workers,
+                             mp_context=multiprocessing.get_context('spawn'),
+                             initializer=_initialize_peak_worker,
+                             initargs=(bam_path, is_seq, config_values, worker_profile_dir)) as executor:
+        def submit_next():
+            if merge_tasks:
+                index, chunk_count, task = merge_tasks.popleft()
+            else:
+                try:
+                    index, chunk_count, task = next(tasks)
+                except StopIteration:
+                    return False
+            pending[executor.submit(_detect_serialized_cluster, task)] = (
+                index, chunk_count, task[0], task[1], task[3], task[4])
+            return True
+
+        try:
+            for _ in range(2 * workers):
+                if not submit_next():
+                    break
+            while pending:
+                done, _ = wait(pending, return_when=FIRST_COMPLETED)
+                for future in done:
+                    index, chunk_count, cluster_id, chromosome, kind, chunk_index = pending.pop(future)
+                    result = future.result()
+                    if kind == 'extract':
+                        parts = partial_signals.setdefault(index, {})
+                        parts[chunk_index] = result
+                        if len(parts) == chunk_count:
+                            # Restore original read order before centroid grouping
+                            # and support thresholds are applied to the whole cluster.
+                            signals = [sig for i in range(chunk_count) for sig in parts[i]]
+                            del partial_signals[index]
+                            merge_tasks.append((index, 1, (cluster_id, chromosome, signals, 'merge', -1)))
+                    else:
+                        completed[index] = result
+                while len(pending) < 2 * workers:
+                    if not submit_next():
+                        break
+                # Submission does not wait for next_result to finish. Only
+                # output order is constrained, preserving signal order/sort ties.
+                while next_result in completed:
+                    yield completed.pop(next_result)
+                    next_result += 1
+        finally:
+            for future in pending:
+                future.cancel()
 
 class Cluster:
     """
@@ -316,6 +476,11 @@ def detect_all_peaks(reads, cluster_id, chromosome, is_seq, bam_stream):
     """
     # 1. Extract
     signals = extract_signals_from_cluster(reads, cluster_id, chromosome, is_seq)
+    return _group_signals_into_peaks(signals, bam_stream)
+
+
+def _group_signals_into_peaks(signals, bam_stream):
+    """Group the complete ordered signal list for one original cluster."""
     if not signals: return [], []
     
     # 2. Filter
@@ -523,28 +688,46 @@ def lift_over_peak(peak, crossmap):
     else:
         peak.source = "New"
 
-def scan_clusters_for_peaks(cluster_dict, is_seq, bam_path, crossmap=None):
+def scan_clusters_for_peaks(cluster_dict, is_seq, bam_path, crossmap=None, threads=1,
+                           worker_profile_dir=None):
     """
     Stage 3 (Part B): Signal Extraction and Peak Detection.
     1. Detect Peaks (on IS-Clean reference).
     2. Lift-Over coordinates to Original Reference.
     3. Classify (Known/Restored vs. Novel).
+    With threads > 1, process independent clusters in worker processes using
+    SAM strings for transfer. Original cluster reads remain available to Stage 4.
+    worker_profile_dir optionally enables profiles and task timings in workers;
+    callers must provide an existing dedicated directory for this scan.
     """
     all_signals = []
     all_peaks = []
-    
-    with pysam.AlignmentFile(bam_path, "rb") as bam_stream:
-        # 1. Detect Observed Peaks
-        for c_id, cluster_obj in cluster_dict.items():
-            sigs, pks = detect_all_peaks(
-                cluster_obj.reads, 
-                c_id, 
-                cluster_obj.chromosome, 
-                is_seq, 
-                bam_stream
-            )
+    if threads < 1:
+        raise ValueError('Stage 3 threads must be at least 1')
+    task_count = sum(len(_read_chunk_ranges(len(obj.reads))) for obj in cluster_dict.values())
+    workers = min(threads, task_count)
+
+    if workers > 1:
+        logging.info('Stage 3: Processing %d original clusters as %d read tasks with %d worker processes.',
+                     len(cluster_dict), task_count, workers)
+        for sigs, pks in _parallel_cluster_results(cluster_dict, is_seq, bam_path, workers,
+                                                 worker_profile_dir):
             all_signals.extend(sigs)
             all_peaks.extend(pks)
+    else:
+        logging.info('Stage 3: Processing %d clusters serially.', len(cluster_dict))
+        with pysam.AlignmentFile(bam_path, "rb") as bam_stream:
+            # 1. Detect Observed Peaks
+            for c_id, cluster_obj in cluster_dict.items():
+                sigs, pks = detect_all_peaks(
+                    cluster_obj.reads,
+                    c_id,
+                    cluster_obj.chromosome,
+                    is_seq,
+                    bam_stream
+                )
+                all_signals.extend(sigs)
+                all_peaks.extend(pks)
             
     # 2. Lift-Over and Classify
     if crossmap:

@@ -8,6 +8,7 @@ Purpose: Stage 1 - Map raw reads to the IS database and extract qualified pairs
 """
 import sys
 import logging
+from contextlib import ExitStack
 import pysam
 from Bio.Seq import Seq
 from src import config
@@ -77,17 +78,12 @@ def align_to_is_db(is_fasta, read_files, threads=16, mode='paired'):
     read_files contains one single-end/interleaved file or two paired-end files.
     """
     # BWA uses -p for interleaved input; separate paired files are positional inputs.
-    cmd = ["bwa", "mem", "-v", "1", "-t", str(threads), is_fasta] + read_files
+    cmd = ["bwa", "mem", "-a", "-Y", "-v", "1", "-t", str(threads)]
     
     if mode == 'interleaved':
         cmd.append("-p")
-        logging.info(f"Starting BWA alignment (Interleaved): {' '.join(cmd)}")
-    elif mode == 'single':
-        # No -p for single end
-        logging.info(f"Starting BWA alignment (Single-End): {' '.join(cmd)}")
-    else:
-        logging.info(f"Starting BWA alignment (Paired): {' '.join(cmd)}")
-        
+    cmd.extend([is_fasta] + read_files)
+    logging.info("Starting BWA alignment (%s): %s", mode, ' '.join(cmd))
     return streaming_process(cmd)
 
 def format_fastq(name, seq, qual, suffix):
@@ -176,78 +172,84 @@ def process_buffer(reads, out_handle, debug_handle=None, mode='paired'):
         return True
     return False
 
-def run_extraction(is_db, read_files, out_handle, threads=16, debug_path=None, mode='paired'):
+def process_is_buffer(reads, out_handles, mode='paired'):
+    """Route each query to every IS for which the original criteria hold.
+
+    Alternative alignments establish IS membership; primary records supply the
+    original FASTQ sequences. Mate mapping is evaluated relative to each IS.
     """
-    Main Module Function:
-    1. Runs BWA MEM via subprocess.
-    2. Streams SAM output.
-    3. Filters reads and writes them to 'out_handle'.
+    primary = {}
+    by_is = {}
+    for read in reads:
+        mate = 1 if mode == 'single' or read.is_read1 else 2
+        if not read.is_secondary and not read.is_supplementary:
+            primary[mate] = read
+        if not read.is_unmapped and read.reference_name in out_handles:
+            by_is.setdefault(read.reference_name, {}).setdefault(mate, []).append(read)
+
+    required = (1,) if mode == 'single' else (1, 2)
+    if any(mate not in primary for mate in required):
+        return set()
+    originals = {mate: get_original_sequence(primary[mate]) for mate in required}
+    if any(is_high_n_content(seq) for seq, qual in originals.values()):
+        return set()
+
+    def qualifying_clip(read, mate):
+        length = len(originals[mate][0])
+        if not read.cigartuples or length <= 2 * config.MIN_ANCHOR_LEN:
+            return False
+        # BWA may omit sequence or hard-clip alternative records. Use the
+        # primary sequence length and count terminal hard clips as clipped bases.
+        return any(op in (4, 5) and config.MIN_ANCHOR_LEN < size < length - config.MIN_ANCHOR_LEN
+                   for op, size in (read.cigartuples[0], read.cigartuples[-1]))
+
+    written = set()
+    for is_name, alignments in by_is.items():
+        clipped = any(qualifying_clip(read, mate)
+                      for mate, records in alignments.items() for read in records)
+        one_mapped = mode != 'single' and len(alignments) == 1
+        if clipped or one_mapped:
+            for mate in required:
+                seq, qual = originals[mate]
+                out_handles[is_name].write(format_fastq(primary[mate].query_name, seq, qual, str(mate)))
+            written.add(is_name)
+    return written
+
+
+def run_extraction(is_db, read_files, output_paths, threads=16, mode='paired'):
+    """Align once with alternative hits enabled and write per-IS FASTQs.
+
+    output_paths maps original IS record IDs to output paths. Each query is
+    emitted at most once per IS, with both mates together for paired input.
+    Returns per-IS counts of extracted reads (single) or pairs (paired).
     """
-       
-    # Setup logging
-    logging.basicConfig(stream=sys.stderr, level=logging.INFO, format='%(asctime)s - %(levelname)s - %(message)s')
-    # Start BWA stream
-    with align_to_is_db(is_fasta=is_db, read_files=read_files, threads=threads, mode=mode) as bwa_process:
-        _extract_stream(bwa_process, out_handle, debug_path, mode)
+    counts = dict.fromkeys(output_paths, 0)
+    with ExitStack() as stack:
+        handles = {name: stack.enter_context(open(path, 'w'))
+                   for name, path in output_paths.items()}
+        process = stack.enter_context(align_to_is_db(is_db, read_files, threads, mode))
+        stream = stack.enter_context(pysam.AlignmentFile(process.stdout, 'r'))
+        current_name = None
+        buffer = []
+        processed = 0
 
+        def flush():
+            for name in process_is_buffer(buffer, handles, mode):
+                counts[name] += 1
 
-def _extract_stream(bwa_process, out_handle, debug_path, mode):
-    
-    # Read SAM output from the managed BWA process.
-    try:
-        # "r" mode reads SAM/BAM. Since BWA outputs SAM by default to stdout, this works.
-        bam_stream = pysam.AlignmentFile(bwa_process.stdout, "r")
-    except ValueError as e:
-        logging.error(f"Failed to open BAM stream: {e}")
-        # Ensure we kill the process if stream fails
-        bwa_process.kill()
-        raise e
-
-    # Optional debug file
-    debug_fh = None
-    if debug_path:
-       debug_fh = open(debug_path, "w")
-       logging.info(f"Debug FASTQ will be saved to: {debug_path}")
-    
-    current_qname = None
-    read_buffer = []
-
-    # Counter for statistics
-    extracted_count = 0
-    processed_count = 0
-
-    for read in bam_stream:
-        processed_count += 1
-        
-        # Update the screen every 1,000,000 alignment records.
-        if processed_count % 1000000 == 0:
-            sys.stderr.write(f"PROGRESS: Processed {processed_count:,} reads...\n")
-            sys.stderr.flush()	
-        
-        # Grouping logic
-        if current_qname is None:
-            current_qname = read.query_name
-            read_buffer.append(read)
-        elif read.query_name == current_qname:
-            read_buffer.append(read)
-        else:
-            # New query name encountered; process previous buffer
-            if process_buffer(read_buffer, out_handle, debug_fh, mode=mode):
-                extracted_count += 1	
-            # Reset buffer
-            current_qname = read.query_name
-            read_buffer = [read]
-    # Process the last buffer
-    if read_buffer:
-        if process_buffer(read_buffer, out_handle, debug_fh, mode=mode):
-            extracted_count += 1
-    
-    # Log the summary
-    unit = "reads" if mode == "single" else "read pairs"
-    logging.info(f"Stage 1 Complete: Processed {processed_count} alignment records. Extracted {extracted_count} candidate {unit}.")
-
-    # Cleanup
-    bam_stream.close()
-    if debug_fh:
-        debug_fh.close()
-    
+        for read in stream:
+            processed += 1
+            if processed % 1000000 == 0:
+                logging.info("Stage 1: Processed %s alignment records.", processed)
+            if current_name is not None and read.query_name != current_name:
+                flush()
+                buffer = []
+            current_name = read.query_name
+            buffer.append(read)
+        if buffer:
+            flush()
+    unit = 'reads' if mode == 'single' else 'read pairs'
+    for name, count in counts.items():
+        logging.info('Stage 1: Extracted %d candidate %s for %s.', count, unit, name)
+    logging.info('Stage 1 complete: Processed %d alignment records.', processed)
+    return counts
