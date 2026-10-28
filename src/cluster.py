@@ -459,9 +459,9 @@ def create_peak_from_signals(signal_list, bam_stream):
             peak.n_right_clips += 1
             
     # Assign Category
-    if peak.n_left_clips > config.ZERO_THRESH:
+    if peak.n_left_clips > 0: # a peak can only have left or right clips, and its count must > MIN_PEAK_SUPPORT
         peak.flank_class = "End" 
-    elif peak.n_right_clips > config.ZERO_THRESH:
+    elif peak.n_right_clips > 0:
         peak.flank_class = "Start" 
 
     
