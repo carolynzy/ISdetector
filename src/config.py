@@ -9,6 +9,10 @@ Purpose: Store default values for parameters and flags used across pipeline stag
 # Stage 1 & 3: 
 MIN_ANCHOR_LEN = 20
 
+# Stage 2: Reference IS removal (BLAST filters; CLI --identity / --fraction)
+BLAST_IDENTITY = 95.0   # Minimum percent identity (0-100)
+BLAST_FRACTION = 0.90   # Minimum aligned length / IS length (0-1)
+
 # Stage 3: Clustering
 CLUSTER_DIST = 50
 MIN_CLUSTER_SUPPORT = 20

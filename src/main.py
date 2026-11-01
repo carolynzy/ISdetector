@@ -20,7 +20,7 @@ from src.processes import run_checked, streaming_process
 import pysam
 import pandas as pd
 from Bio import SeqIO
-from src import __version__, utils, extract_fastq, cluster, detector
+from src import __version__, config, utils, extract_fastq, cluster, detector
 
 def parse_args():
     """
@@ -52,6 +52,10 @@ def parse_args():
     # Optional / Config
     parser.add_argument("-t", "--threads", type=int, default=16,
                         help="BWA/Samtools threads and Stage 3 worker processes (default: 16).")
+    parser.add_argument("--identity", type=float, default=config.BLAST_IDENTITY,
+                        help=f"Minimum BLAST identity percentage for reference IS removal (default: {config.BLAST_IDENTITY}).")
+    parser.add_argument("--fraction", type=float, default=config.BLAST_FRACTION,
+                        help=f"Minimum BLAST aligned-length / IS-length fraction for reference IS removal (default: {config.BLAST_FRACTION:.2f}).")
     
     # Debug flags
     parser.add_argument("--debug-fastq", action="store_true", help="Save Stage 1 extracted reads to file.")
@@ -60,6 +64,10 @@ def parse_args():
     args = parser.parse_args()
     if args.threads < 1:
         parser.error('--threads must be at least 1')
+    if not 0.0 <= args.identity <= 100.0:
+        parser.error('--identity must be between 0 and 100 (percent)')
+    if not 0.0 <= args.fraction <= 1.0:
+        parser.error('--fraction must be between 0 and 1')
 
     modes = []
     if args.fastq1 and args.fastq2: modes.append("paired")
@@ -254,7 +262,9 @@ def main():
             # 2. Generate IS-Specific Clean Reference
             # Remove matches to this IS from the reference and retain coordinate mapping.
             ref_clean_path, crossmap = utils.generate_clean_reference(
-                ref_fasta_original, is_seq, is_len, args.outdir, suffix=f"_{safe_is_name}"
+                ref_fasta_original, is_seq, is_len, args.outdir,
+                identity_cutoff=args.identity, coverage_cutoff=args.fraction,
+                suffix=f"_{safe_is_name}"
             )
             clean_reference_paths.add(ref_clean_path)
             

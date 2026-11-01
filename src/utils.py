@@ -17,6 +17,7 @@ from collections import defaultdict
 import pandas as pd
 from Bio import SeqFeature
 from src.processes import run_checked
+from src import config
 
 class Genebank:
     """
@@ -117,7 +118,7 @@ class Genebank:
 
         return f_type, name
 
-def generate_clean_reference(ref_fasta, is_seq, is_len, output_dir, identity_cutoff=95.0, coverage_cutoff=0.90, suffix=""):
+def generate_clean_reference(ref_fasta, is_seq, is_len, output_dir, identity_cutoff=config.BLAST_IDENTITY, coverage_cutoff=config.BLAST_FRACTION, suffix=""):
     """
     Maps IS to reference, removes it, and records coordinate mapping.
     
