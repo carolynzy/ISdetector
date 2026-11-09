@@ -1,0 +1,202 @@
+{
+  "_instructions": {
+    "_format": "Instruction entries are documentation only. Keep every required field, including for disabled modes; optional values must use null, not omitted keys. Paths are relative to the working directory. Percentages use fractions, e.g. 0.5 means 50%.",
+    "input": "Required: path to the reference genome FASTA file; plain FASTA and gzip-compressed .gz files are supported.",
+    "outdir": "Required: directory for simulation output files.",
+    "prefix": "Required: nonempty output filename prefix.",
+    "batch": "Required: positive integer number of replicates.",
+    "batch_start": "Optional positive integer or quoted decimal index, default \"001\". First replicate index; batch is the number to generate. For example, batch_start \"007\" and batch 3 produce 007-009. Indices use at least three digits, and seeds align with those indices. With --config, set this field instead of --batch-start.",
+    "seed": "Required: integer random seed for reproducible runs.",
+    "chromosome_weight": "Optional chromosome-to-selector-to-weight object, default {} (all multipliers 1). Example: {\"chr1\": {\"SV\": 2, \"deletion\": 3, \"IS\": 2, \"IS1\": 4}}. Specific IS type overrides IS event class, which overrides mode. Only whole-genome sampling is weighted; reference IS removal, reference-adjacent placement, and preferred BED searches take priority.",
+    "dryrun": "Optional boolean, default false: true writes truth TSV files, gzip sequence tables (*.sequences.txt.gz), and logs, skipping mutated-genome construction and FASTA files. With --config, set this field instead of using --dryrun. Resume with --simulate PATH_TO_DRYRUN_LOG; keep the reference, truth files, and sequence tables unchanged.",
+    "debug": "Optional boolean, default false: true writes SAMPLE.debug.tsv with truth-format rows in event injection order after the output FASTA succeeds. This setting is ignored when dryrun is true. The --debug flag can also enable it for a non-dry-run config invocation.",
+    "fasta_compression_threshold": "Optional nonnegative integer, default 100000000: gzip output FASTA (*.fasta.gz) when total reference length across all records is at least this many bases; otherwise write *.fasta. Set 0 to always gzip FASTA. Sequence tables are always gzip-compressed in both dry and normal runs. With --config, set this field instead of --fasta-compression-threshold.",
+    "modes": "Required: mode settings; keep all fields.",
+    "snp": "Required: SNP settings, even when disabled.",
+    "sv": "Required: structural variant settings, even when disabled.",
+    "reference_is": "Required: reference IS settings; optional BED input may be null.",
+    "preferred_bed_targeting": "Required: preferred placement settings; optional BED input may be null.",
+    "is_elements": "Required: list of complete IS objects; use [] for no IS elements."
+  },
+  "input": "./NC_000962.3.fasta",
+  "outdir": "./genome_simulation",
+  "prefix": "positive_mixed",
+  "batch": 5,
+  "batch_start": "001",
+  "seed": 42,
+  "chromosome_weight": {},
+  "dryrun": false,
+  "debug": false,
+  "fasta_compression_threshold": 100000000,
+  "modes": {
+    "_instructions": {
+      "complex_mode": "Required: true enables bundled components; false uses individually enabled modes.",
+      "is_enabled": "Required: true enables IS event simulation; false disables it. Complex mode forces true.",
+      "snp_enabled": "Required: true enables SNP event simulation; false disables it. Complex mode forces true.",
+      "sv_enabled": "Required: true enables SV event simulation; false disables it. Complex mode forces true."
+    },
+    "complex_mode": true,
+    "is_enabled": true,
+    "snp_enabled": false,
+    "sv_enabled": false
+  },
+  "snp": {
+    "_instructions": {
+      "frequency": "Required: scalar rate below 1, count at least 1, or integer count range such as 0-1; 0 disables genome-wide SNPs.",
+      "transition": "Required: nonnegative transition weight; the sum of both SNP weights must be positive.",
+      "transversion": "Required: nonnegative transversion weight; the sum of both SNP weights must be positive.",
+      "boundary_snp_frequency": "Required: scalar rate/count or a quoted integer count range such as \"0-5\"; 0 disables boundary SNPs. Unquoted ranges are not valid JSON.",
+      "boundary_snp_window": "Required: nonnegative window size in bp around SV/IS boundaries."
+    },
+    "frequency": 0.0001,
+    "transition": 2.0,
+    "transversion": 1.0,
+    "boundary_snp_frequency": "0-5",
+    "boundary_snp_window": 20
+  },
+  "sv": {
+    "_instructions": {
+      "specs": "Required: list of complete SV specifications; [] requests no SV events.",
+      "long_insertion_min_size": "Required: insertion size threshold in bp for candidate/model sequence sourcing.",
+      "long_insertion_candidates_fasta": "Required key, optional value: FASTA path containing A/C/G/T candidate sequences, or null to use reference-based generation.",
+      "long_insertion_local_window": "Required: local reference window radius in bp for sequence generation.",
+      "long_insertion_k": "Required: positive integer k-mer size for sequence generation.",
+      "spec_fields": {
+        "subtype": "Required: deletion, insertion, inversion, duplication, or translocation.",
+        "size_range": "Required: positive integer MIN-MAX size range in bp.",
+        "frequency": "Required: scalar rate below 1, event count at least 1, or a quoted nonnegative integer count range such as \"0-5\"; 0 disables this specification. A range is sampled independently for each replicate.",
+        "cross_chromosome_count": "Optional nonnegative integer: requested cross-chromosome events within the total frequency count; remaining events are same-chromosome. Capped at total events. Single-chromosome inputs use same-chromosome events only. Omit to preserve unrestricted legacy placement."
+      }
+    },
+    "specs": [
+      {
+        "subtype": "deletion",
+        "size_range": "100-500",
+        "frequency": "1-5"
+      },
+      {
+        "subtype": "insertion",
+        "size_range": "100-500",
+        "frequency": "1-5"
+      },
+      {
+        "subtype": "inversion",
+        "size_range": "100-500",
+        "frequency": "0-5"
+      },
+      {
+        "subtype": "duplication",
+        "size_range": "100-500",
+        "frequency": "1-5"
+      },
+      {
+        "subtype": "translocation",
+        "size_range": "100-500",
+        "frequency": "0-5",
+        "cross_chromosome_count": 2
+      }
+    ],
+    "long_insertion_min_size": 100,
+    "long_insertion_candidates_fasta": null,
+    "long_insertion_local_window": 100000,
+    "long_insertion_k": 5
+  },
+  "reference_is": {
+    "_instructions": {
+      "known_is_bed": "Required key, optional value: reference IS BED path or null to skip reference IS mode; coordinates are 0-based half-open, column 4 is the raw IS type.",
+      "reference_removal_frequency_range": "Required: per-IS-type scalar rate/count or integer count range; 0 preserves all reference copies."
+    },
+    "known_is_bed": "IS/IS6110_H37Rv.bed",
+    "reference_removal_frequency_range": 0.3
+  },
+  "preferred_bed_targeting": {
+    "_instructions": {
+      "preferred_is_bed": "Required key, optional value: preferred placement BED path or null to disable targeting; coordinates are 0-based half-open.",
+      "preferred_bed_target_proportion": "Required: target fraction from 0 to 1 of preferred intervals.",
+      "preferred_bed_window": "Required: nonnegative placement window in bp around preferred intervals."
+    },
+    "preferred_is_bed": null,
+    "preferred_bed_target_proportion": 0.3,
+    "preferred_bed_window": 10
+  },
+  "is_elements": [
+    {
+      "_instructions": {
+        "name": "Required: unique nonempty IS name when is_seq is provided; FASTA headers are ignored. May be null only when is_seq is null.",
+        "is_seq": "Required key, optional value: FASTA file path or unprefixed A/C/G/T/N/- string; null skips this element. IS:sequence format is forbidden.",
+        "simple_insertion_frequency_range": "Required: full-length insertion integer count range, or scalar rate/count; 0 disables.",
+        "partial_insertion_frequency_range": "Required: partial insertion integer count range, or scalar rate/count; 0 disables.",
+        "partial_insertion_proportion_range": "Required: MIN-MAX fraction of IS length, with 0 < MIN <= MAX <= 1.",
+        "nested_insertion_frequency_range": "Required: nested two-copy event integer count range, or scalar rate/count; 0 disables.",
+        "nested_mixed_percentage": "Required: fraction from 0 to 1 using different IS types in nested events.",
+        "reference_adjacent_insertion_percentage": "Required: fraction from 0 to 1 of preserved matching reference copies receiving an adjacent insertion.",
+        "reference_adjacent_mixed_percentage": "Required: fraction from 0 to 1 using a different IS type for reference-adjacent insertions.",
+        "consecutive_insertion_frequency_range": "Required: zero-gap paired event integer count range, or scalar rate/count; 0 disables.",
+        "consecutive_mixed_percentage": "Required: fraction from 0 to 1 using different IS types in consecutive events.",
+        "nearby_insertion_frequency_range": "Required: nearby paired event integer count range, or scalar rate/count; 0 disables.",
+        "nearby_insertion_gap_range": "Required: positive integer MIN-MAX reference gap in bp.",
+        "nearby_mixed_percentage": "Required: fraction from 0 to 1 using different IS types in nearby events.",
+        "flanking_deletion_size_ranges": "Required: list of positive integer MIN-MAX sizes in bp for flanking deletion; pair each entry with one frequency entry.",
+        "flanking_insertion_size_ranges": "Required: list of positive integer MIN-MAX sizes in bp for flanking insertion; pair each entry with one frequency entry.",
+        "flanking_inversion_size_ranges": "Required: list of positive integer MIN-MAX sizes in bp for flanking inversion; pair each entry with one frequency entry.",
+        "flanking_*_frequency_ranges": "Required: list matching the size list length; ranges are inclusive integer event counts (0-1 means zero or one); scalar rates/counts also accepted."
+      },
+      "name": "IS6110",
+      "is_seq": "./IS/IS6110.fasta",
+      "simple_insertion_frequency_range": "50-100",
+      "partial_insertion_frequency_range": "50-100",
+      "partial_insertion_proportion_range": "0.1-0.9",
+      "nested_insertion_frequency_range": "25-50",
+      "nested_mixed_percentage": 0.5,
+      "reference_adjacent_insertion_percentage": 0.2,
+      "reference_adjacent_mixed_percentage": 0.5,
+      "consecutive_insertion_frequency_range": "25-50",
+      "consecutive_mixed_percentage": 0.5,
+      "nearby_insertion_frequency_range": "25-50",
+      "nearby_insertion_gap_range": "1-100",
+      "nearby_mixed_percentage": 0.5,
+      "flanking_deletion_size_ranges": [
+        "10-100",
+        "101-500",
+        "501-1000",
+        "1001-5000",
+        "5001-10000"
+      ],
+      "flanking_deletion_frequency_ranges": [
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10"
+      ],
+      "flanking_insertion_size_ranges": [
+        "10-20",
+        "21-50",
+        "51-100",
+        "101-200",
+        "201-500"
+      ],
+      "flanking_insertion_frequency_ranges": [
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10"
+      ],
+      "flanking_inversion_size_ranges": [
+        "101-500",
+        "501-5000",
+        "5001-50000",
+        "50001-100000",
+        "100001-1000000"
+      ],
+      "flanking_inversion_frequency_ranges": [
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10",
+        "5-10"
+      ]
+    }
+  ]
+}
