@@ -63,7 +63,7 @@ isdetector \\
 ## Workflow
 
 <p align="center">
-    <img src="flowchart\_v2.png" alt="ISdetector Workflow" width="300">
+    <img src="flowchart_v2.png" alt="ISdetector Workflow" width="300">
 </p>
 
 ## Dataset
